@@ -44,20 +44,21 @@ public class App {
             }else{
                 num = (int) Double.parseDouble(n.toString());
             }
+            var publicCidr = data.get("cidr-block");
+            if(null == publicCidr || publicCidr.toString().isEmpty()){
+                publicCidr = "0.0.0.0/0";
+            }
 
             Output<GetAvailabilityZonesResult> availabilityZones = AwsFunctions.getAvailabilityZones(GetAvailabilityZonesArgs.builder().state("available").build());
 
-            List<String> strings = calculateSubnets(cidr,num*2);
-            assert strings != null;
-            for (String s: strings) {
-                ctx.log().info(s);
-            }
+
+            Object finalPublicCidr = publicCidr;
             availabilityZones.applyValue(availabilityZonesResult -> {
                 int noOfZones = availabilityZonesResult.names().size();
+                List<String> strings = calculateSubnets(cidr,noOfZones*2);
                 List<Subnet> publicSubNetList = createPublicSubNets(num,vpcName,vpc,availabilityZonesResult.names(),noOfZones,strings);
                 List<Subnet> privateSubNetList =createPrivateSubnets(num,vpcName,vpc,availabilityZonesResult.names(),noOfZones,strings);
                 var igw = new InternetGateway("my-igw",
-
                         InternetGatewayArgs.builder()
                                 .vpcId(vpc.id())
                                 .tags(Map.of("Name", vpcName+ "_igw"))
@@ -66,7 +67,7 @@ public class App {
                         RouteTableArgs.builder()
                                 .tags(Map.of("Name", vpcName+ "_public_route_table"))
                                 .vpcId(vpc.id())
-                                .routes(RouteTableRouteArgs.builder().cidrBlock("0.0.0.0/0").gatewayId(igw.id()).build())
+                                .routes(RouteTableRouteArgs.builder().cidrBlock(finalPublicCidr.toString()).gatewayId(igw.id()).build())
                                 .build()
                 );
                 var routeTable2 = new RouteTable(vpcName + "_private_route_table",
@@ -75,7 +76,7 @@ public class App {
                                 .vpcId(vpc.id())
                                 .build()
                 );
-                for(int i =0 ; i < num; i++){
+                for(int i =0 ; i < noOfZones; i++){
                     new RouteTableAssociation("pu_route_table_association_" + i,
                             RouteTableAssociationArgs.builder()
                                     .subnetId(publicSubNetList.get(i).id())
@@ -96,13 +97,14 @@ public class App {
 
     public static List<Subnet> createPublicSubNets(int num,String vpcName,Vpc vpc,List<String> list, int noOfZones,List<String> subnetStrings){
         List<Subnet> publicSubNetList = new ArrayList<>();
-        for (int i = 0; i < num; i++) {
+        int n  = Math.min(num,noOfZones);
+        for (int i = 0; i <n ; i++) {
             String subnetName = vpcName + "_public_" +i;
             var publicSubnet = new Subnet(subnetName,
                     SubnetArgs.builder()
                             .cidrBlock(subnetStrings.get(i))
                             .vpcId(vpc.id())
-                            .availabilityZone(list.get(i%noOfZones))
+                            .availabilityZone(list.get(i))
                             .mapPublicIpOnLaunch(true)
                             .tags(Map.of("Name",subnetName))
                             .build());
@@ -113,13 +115,14 @@ public class App {
 
     public static List<Subnet> createPrivateSubnets(int num,String vpcName,Vpc vpc,List<String> list, int noOfZones,List<String> subnetString){
         List<Subnet> privateSubnetList = new ArrayList<>();
-        for (int i = 0; i < num; i++) {
+        int n  = Math.min(num,noOfZones);
+        for (int i = 0; i < n; i++) {
             String subnetName = vpcName + "_private_" +i;
             var publicSubnet = new Subnet(subnetName,
                     SubnetArgs.builder()
-                            .cidrBlock(subnetString.get(i+num))
+                            .cidrBlock(subnetString.get(i+n))
                             .vpcId(vpc.id())
-                            .availabilityZone(list.get(i%noOfZones))
+                            .availabilityZone(list.get(i))
                             .tags(Map.of("Name",subnetName))
                             .build());
             privateSubnetList.add(publicSubnet);
@@ -161,7 +164,6 @@ public class App {
         for (int i = 0; i < 4; i++) {
             bytes[i] = (byte) ((value >> (24 - i * 8)) & 0xff);
         }
-
         return InetAddress.getByAddress(bytes).getHostAddress();
     }
 
