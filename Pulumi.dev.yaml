@@ -1,8 +1,10 @@
 encryptionsalt: v1:jjGTTmHXuTQ=:v1:Il25/gi2r7D7wJWX:zbJcbQwZ2NcG2UzBRlecIoxzen1o+Q==
 config:
+  aws:region: us-west-1
+  aws:profile: dev
   iac-pulumi:data:
-    aws:region: us-east-1
-    aws:profile: dev
     name : "test"
-    cidr-block: "10.0.0.0/16"
-    num_of_subnets : 4
+    cidr-block: "10.0.0.0/18"
+    num_of_subnets : 3
+    public-cidr: 0.0.0.0/0
+
