@@ -44,7 +44,7 @@ public class App {
             }else{
                 num = (int) Double.parseDouble(n.toString());
             }
-            var publicCidr = data.get("cidr-block");
+            var publicCidr = data.get("public-cidr");
             if(null == publicCidr || publicCidr.toString().isEmpty()){
                 publicCidr = "0.0.0.0/0";
             }
@@ -54,7 +54,7 @@ public class App {
 
             Object finalPublicCidr = publicCidr;
             availabilityZones.applyValue(availabilityZonesResult -> {
-                int noOfZones = availabilityZonesResult.names().size();
+                int noOfZones = Math.min(availabilityZonesResult.names().size(),num);
                 List<String> strings = calculateSubnets(cidr,noOfZones*2);
                 List<Subnet> publicSubNetList = createPublicSubNets(num,vpcName,vpc,availabilityZonesResult.names(),noOfZones,strings);
                 List<Subnet> privateSubNetList =createPrivateSubnets(num,vpcName,vpc,availabilityZonesResult.names(),noOfZones,strings);
@@ -97,8 +97,8 @@ public class App {
 
     public static List<Subnet> createPublicSubNets(int num,String vpcName,Vpc vpc,List<String> list, int noOfZones,List<String> subnetStrings){
         List<Subnet> publicSubNetList = new ArrayList<>();
-        int n  = Math.min(num,noOfZones);
-        for (int i = 0; i <n ; i++) {
+
+        for (int i = 0; i <num ; i++) {
             String subnetName = vpcName + "_public_" +i;
             var publicSubnet = new Subnet(subnetName,
                     SubnetArgs.builder()
@@ -115,12 +115,12 @@ public class App {
 
     public static List<Subnet> createPrivateSubnets(int num,String vpcName,Vpc vpc,List<String> list, int noOfZones,List<String> subnetString){
         List<Subnet> privateSubnetList = new ArrayList<>();
-        int n  = Math.min(num,noOfZones);
-        for (int i = 0; i < n; i++) {
+
+        for (int i = 0; i < num; i++) {
             String subnetName = vpcName + "_private_" +i;
             var publicSubnet = new Subnet(subnetName,
                     SubnetArgs.builder()
-                            .cidrBlock(subnetString.get(i+n))
+                            .cidrBlock(subnetString.get(i+num))
                             .vpcId(vpc.id())
                             .availabilityZone(list.get(i))
                             .tags(Map.of("Name",subnetName))

@@ -3,7 +3,5 @@ config:
   aws:profile: demo
   aws:region: us-west-1
   iac-pulumi:data:
-    cidr-block: 10.0.0.0/16
     name: test
     num_of_subnets: 4
-    public-cidr: 0.0.0.0/0
