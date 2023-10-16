@@ -56,8 +56,8 @@ public class App {
             availabilityZones.applyValue(availabilityZonesResult -> {
                 int noOfZones = Math.min(availabilityZonesResult.names().size(),num);
                 List<String> strings = calculateSubnets(cidr,noOfZones*2);
-                List<Subnet> publicSubNetList = createPublicSubNets(num,vpcName,vpc,availabilityZonesResult.names(),noOfZones,strings);
-                List<Subnet> privateSubNetList =createPrivateSubnets(num,vpcName,vpc,availabilityZonesResult.names(),noOfZones,strings);
+                List<Subnet> publicSubNetList = createPublicSubNets(noOfZones,vpcName,vpc,availabilityZonesResult.names(),strings);
+                List<Subnet> privateSubNetList =createPrivateSubnets(noOfZones,vpcName,vpc,availabilityZonesResult.names(),strings);
                 var igw = new InternetGateway("my-igw",
                         InternetGatewayArgs.builder()
                                 .vpcId(vpc.id())
@@ -95,7 +95,7 @@ public class App {
         });
     }
 
-    public static List<Subnet> createPublicSubNets(int num,String vpcName,Vpc vpc,List<String> list, int noOfZones,List<String> subnetStrings){
+    public static List<Subnet> createPublicSubNets(int num,String vpcName,Vpc vpc,List<String> list,List<String> subnetStrings){
         List<Subnet> publicSubNetList = new ArrayList<>();
 
         for (int i = 0; i <num ; i++) {
@@ -113,7 +113,7 @@ public class App {
         return publicSubNetList;
     }
 
-    public static List<Subnet> createPrivateSubnets(int num,String vpcName,Vpc vpc,List<String> list, int noOfZones,List<String> subnetString){
+    public static List<Subnet> createPrivateSubnets(int num,String vpcName,Vpc vpc,List<String> list,List<String> subnetString){
         List<Subnet> privateSubnetList = new ArrayList<>();
 
         for (int i = 0; i < num; i++) {
@@ -166,7 +166,6 @@ public class App {
         }
         return InetAddress.getByAddress(bytes).getHostAddress();
     }
-
 
 }
 

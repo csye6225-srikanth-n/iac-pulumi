@@ -5,6 +5,6 @@ config:
   iac-pulumi:data:
     name : "test"
     cidr-block: "10.0.0.0/16"
-    num_of_subnets : 4
+    num_of_subnets : 8
     public-cidr: 0.0.0.0/0
 
