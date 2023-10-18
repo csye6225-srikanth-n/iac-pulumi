@@ -3,7 +3,8 @@ package myproject;
 import com.pulumi.Pulumi;
 import com.pulumi.aws.AwsFunctions;
 import com.pulumi.aws.ec2.*;
-import com.pulumi.aws.ec2.inputs.RouteTableRouteArgs;
+import com.pulumi.aws.ec2.inputs.*;
+import com.pulumi.aws.ec2.outputs.GetAmiResult;
 import com.pulumi.aws.inputs.GetAvailabilityZonesArgs;
 import com.pulumi.aws.outputs.GetAvailabilityZonesResult;
 import com.pulumi.core.Output;
@@ -58,6 +59,7 @@ public class App {
                 List<String> strings = calculateSubnets(cidr,noOfZones*2);
                 List<Subnet> publicSubNetList = createPublicSubNets(noOfZones,vpcName,vpc,availabilityZonesResult.names(),strings);
                 List<Subnet> privateSubNetList =createPrivateSubnets(noOfZones,vpcName,vpc,availabilityZonesResult.names(),strings);
+                Output<String> securityGroupId = createSecurityGroup(vpc,vpcName,data);
                 var igw = new InternetGateway("my-igw",
                         InternetGatewayArgs.builder()
                                 .vpcId(vpc.id())
@@ -89,6 +91,8 @@ public class App {
                                     .routeTableId(routeTable2.id())
                                     .build());
                 }
+                Instance instance =createEc2(vpcName,securityGroupId, publicSubNetList.get(0),data);
+                ctx.export("instance-id", instance.id());
                 return  null;
             });
             ctx.export("vpc-id", vpc.id());
@@ -167,6 +171,60 @@ public class App {
         return InetAddress.getByAddress(bytes).getHostAddress();
     }
 
+    public static Output<String> createSecurityGroup(Vpc vpc, String vpcName, Map<String,Object> data){
+        String security_group = vpcName + "_application_security_group";
+        List<Double> ports = (List<Double>) data.get("ports");
+        String publicIpString = data.get("public-cidr").toString();
+        List<SecurityGroupIngressArgs> securityGroupIngressArgsList = new ArrayList<>();
+        for(Double port : ports){
+            securityGroupIngressArgsList.add(SecurityGroupIngressArgs.builder()
+                    .fromPort(port.intValue())
+                    .toPort(port.intValue())
+                    .protocol("tcp")
+                    .cidrBlocks(publicIpString).build());
+        }
+        var allowTcp = new SecurityGroup(security_group,
+                SecurityGroupArgs.builder()
+                        .description("Allow TCP connections")
+                        .vpcId(vpc.id()).ingress(securityGroupIngressArgsList)
+                        .tags(Map.of("Name",security_group))
+                        .build());
+        return allowTcp.id();
+    }
+
+    public static Instance createEc2(String vpcName,Output<String> securityGroupId, Subnet subnet,Map<String,Object> data){
+        String instanceName = vpcName + "_instance";
+        Double size = (Double) data.get("volume");
+        InstanceEbsBlockDeviceArgs ebsBlockDevice = InstanceEbsBlockDeviceArgs.builder()
+                .deviceName("/dev/xvda")
+                .volumeType("gp2")
+                .volumeSize(size.intValue())
+                .deleteOnTermination(true)
+                .build();
+
+        final var customAmi = Ec2Functions.getAmi(GetAmiArgs.builder()
+                .mostRecent(true)
+                .owners(data.get("owner_id").toString())
+                .filters(GetAmiFilterArgs.builder()
+                        .name("name")
+                        .values("csye6225_2023_*")
+                        .build())
+                .build());
+        List<InstanceEbsBlockDeviceArgs> ebsBlockDeviceArgsList = new ArrayList<>();
+        ebsBlockDeviceArgsList.add(ebsBlockDevice);
+        Instance instance =  new Instance(instanceName, InstanceArgs.builder()
+                .ami(customAmi.applyValue(GetAmiResult::id))
+                .instanceType(data.get("instance_type").toString())
+                .ebsBlockDevices(ebsBlockDeviceArgsList)
+                .subnetId(subnet.id())
+                .keyName(data.get("key_name").toString())
+                .associatePublicIpAddress(true)
+                .vpcSecurityGroupIds(securityGroupId.applyValue(Collections::singletonList))
+                .disableApiTermination(false)
+                .tags(Map.of("Name",instanceName))
+                .build());
+        return instance;
+    }
 }
 
 
