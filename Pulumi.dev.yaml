@@ -5,6 +5,11 @@ config:
   iac-pulumi:data:
     name : "test"
     cidr-block: "10.0.0.0/16"
-    num_of_subnets : 8
+    num_of_subnets : 2
     public-cidr: 0.0.0.0/0
+    ports: [80,443, 22,8080]
+    volume: 25
+    key_name: "test3"
+    instance_type: "t2.micro"
+    owner_id: "921922858617"
 
