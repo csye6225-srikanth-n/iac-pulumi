@@ -201,19 +201,25 @@ public class App {
                 .volumeSize(size.intValue())
                 .deleteOnTermination(true)
                 .build();
-
-        final var customAmi = Ec2Functions.getAmi(GetAmiArgs.builder()
-                .mostRecent(true)
-                .owners(data.get("owner_id").toString())
-                .filters(GetAmiFilterArgs.builder()
-                        .name("name")
-                        .values("csye6225_2023_*")
-                        .build())
-                .build());
+        String ami_id = (String) data.get("ami_id");
         List<InstanceEbsBlockDeviceArgs> ebsBlockDeviceArgsList = new ArrayList<>();
         ebsBlockDeviceArgsList.add(ebsBlockDevice);
-        Instance instance =  new Instance(instanceName, InstanceArgs.builder()
-                .ami(customAmi.applyValue(GetAmiResult::id))
+        InstanceArgs.Builder instanceArgs = InstanceArgs.builder();
+        if(ami_id.isEmpty()){
+            String ami_name = (String) data.get("ami_name");
+            final var customAmi = Ec2Functions.getAmi(GetAmiArgs.builder()
+                    .mostRecent(true)
+                    .owners(data.get("owner_id").toString())
+                    .filters(GetAmiFilterArgs.builder()
+                            .name("name")
+                            .values(ami_name)
+                            .build())
+                    .build());
+            instanceArgs.ami(customAmi.applyValue(GetAmiResult::id));
+        }else{
+            instanceArgs.ami(ami_id);
+        }
+        return new Instance(instanceName, instanceArgs
                 .instanceType(data.get("instance_type").toString())
                 .ebsBlockDevices(ebsBlockDeviceArgsList)
                 .subnetId(subnet.id())
@@ -223,7 +229,6 @@ public class App {
                 .disableApiTermination(false)
                 .tags(Map.of("Name",instanceName))
                 .build());
-        return instance;
     }
 }
 
