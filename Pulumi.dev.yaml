@@ -12,4 +12,6 @@ config:
     key_name: "test3"
     instance_type: "t2.micro"
     owner_id: "921922858617"
+    ami_id: ""
+    ami_name: "csye6225_2023_*"
 
