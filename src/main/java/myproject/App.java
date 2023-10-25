@@ -7,7 +7,10 @@ import com.pulumi.aws.ec2.inputs.*;
 import com.pulumi.aws.ec2.outputs.GetAmiResult;
 import com.pulumi.aws.inputs.GetAvailabilityZonesArgs;
 import com.pulumi.aws.outputs.GetAvailabilityZonesResult;
+import com.pulumi.aws.rds.SubnetGroup;
+import com.pulumi.aws.rds.SubnetGroupArgs;
 import com.pulumi.core.Output;
+import com.pulumi.resources.CustomResourceOptions;
 
 import java.net.Inet4Address;
 import java.net.InetAddress;
@@ -19,7 +22,7 @@ public class App {
     public static void main(String[] args) {
         Pulumi.run(ctx -> {
             var config = ctx.config();
-            var data = config.requireObject("data", Map.class);
+            Map<String,Object> data = config.requireObject("data", Map.class);
 
             var v = data.get("name");
             if(null == v || v.toString().isEmpty()){
@@ -59,7 +62,8 @@ public class App {
                 List<String> strings = calculateSubnets(cidr,noOfZones*2);
                 List<Subnet> publicSubNetList = createPublicSubNets(noOfZones,vpcName,vpc,availabilityZonesResult.names(),strings);
                 List<Subnet> privateSubNetList =createPrivateSubnets(noOfZones,vpcName,vpc,availabilityZonesResult.names(),strings);
-                Output<String> securityGroupId = createSecurityGroup(vpc,vpcName,data);
+                createSecurityGroup(vpc, data);
+
                 var igw = new InternetGateway("my-igw",
                         InternetGatewayArgs.builder()
                                 .vpcId(vpc.id())
@@ -91,8 +95,10 @@ public class App {
                                     .routeTableId(routeTable2.id())
                                     .build());
                 }
-                Instance instance =createEc2(vpcName,securityGroupId, publicSubNetList.get(0),data);
-                ctx.export("instance-id", instance.id());
+                createDbSecurityGroup(vpc, data);
+                com.pulumi.aws.rds.Instance dbInstance = createDBInstance(data,privateSubNetList);
+                Instance instance =createEc2(publicSubNetList.get(0),data,dbInstance);
+//                ctx.export("instance-id", instance.id());
                 return  null;
             });
             ctx.export("vpc-id", vpc.id());
@@ -101,7 +107,6 @@ public class App {
 
     public static List<Subnet> createPublicSubNets(int num,String vpcName,Vpc vpc,List<String> list,List<String> subnetStrings){
         List<Subnet> publicSubNetList = new ArrayList<>();
-
         for (int i = 0; i <num ; i++) {
             String subnetName = vpcName + "_public_" +i;
             var publicSubnet = new Subnet(subnetName,
@@ -171,8 +176,8 @@ public class App {
         return InetAddress.getByAddress(bytes).getHostAddress();
     }
 
-    public static Output<String> createSecurityGroup(Vpc vpc, String vpcName, Map<String,Object> data){
-        String security_group = vpcName + "_application_security_group";
+    public static void createSecurityGroup(Vpc vpc, Map<String,Object> data){
+        String security_group = data.get("name") + "_application_security_group";
         List<Double> ports = (List<Double>) data.get("ports");
         String publicIpString = data.get("public-cidr").toString();
         List<SecurityGroupIngressArgs> securityGroupIngressArgsList = new ArrayList<>();
@@ -189,12 +194,45 @@ public class App {
                         .vpcId(vpc.id()).ingress(securityGroupIngressArgsList)
                         .tags(Map.of("Name",security_group))
                         .build());
-        return allowTcp.id();
+        data.put("ec2_sg",allowTcp.id());
     }
 
-    public static Instance createEc2(String vpcName,Output<String> securityGroupId, Subnet subnet,Map<String,Object> data){
-        String instanceName = vpcName + "_instance";
+    public static void createDbSecurityGroup(Vpc vpc, Map<String,Object> data){
+        String security_group = data.get("name") + "_database_sg";
+        Double port = (Double) data.get("db_port");
+        Output<String> securityGroupId = (Output<String>) data.get("ec2_sg");
+        List<SecurityGroupIngressArgs> securityGroupIngressArgsList = new ArrayList<>();
+        securityGroupIngressArgsList.add(SecurityGroupIngressArgs.builder()
+                .fromPort(port.intValue())
+                .toPort(port.intValue())
+                .protocol("tcp")
+                .securityGroups(securityGroupId.applyValue(Collections::singletonList)).build());
+
+
+        var allowTcp = new SecurityGroup(security_group,
+                SecurityGroupArgs.builder()
+                        .description("Allow TCP connections")
+                        .vpcId(vpc.id()).ingress(securityGroupIngressArgsList)
+                        .tags(Map.of("Name",security_group))
+                        .build());
+        var outBound = new SecurityGroupRule("ec2-rds-outbound",
+                SecurityGroupRuleArgs.builder()
+                        .description("Allow TCP connections")
+                        .type("egress")
+                        .fromPort(port.intValue())
+                        .toPort(port.intValue())
+                        .protocol("tcp")
+                        .sourceSecurityGroupId(allowTcp.id())
+                        .securityGroupId(securityGroupId)
+                        .build());
+
+        data.put("database_sg",allowTcp.id());
+    }
+
+    public static Instance createEc2(Subnet subnet, Map<String,Object> data, com.pulumi.aws.rds.Instance dbInstance){
+        String instanceName = data.get("name") + "_instance";
         Double size = (Double) data.get("volume");
+        Output<String> securityGroupId = (Output<String>) data.get("ec2_sg");
         InstanceEbsBlockDeviceArgs ebsBlockDevice = InstanceEbsBlockDeviceArgs.builder()
                 .deviceName("/dev/xvda")
                 .volumeType("gp2")
@@ -219,6 +257,21 @@ public class App {
         }else{
             instanceArgs.ami(ami_id);
         }
+        String dbName = (String) data.get("db_name");
+        String userName = (String) data.get("user_name");
+        Output<String> userData = dbInstance.address().applyValue(v -> String.format("#!/bin/bash\n" +
+                        "echo \"export DB_HOST=%s\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export DB_USER=%s\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export DB_NAME=%s\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export DB_PASS=%s\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export DB_PORT=%d\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export FILE_PATH=%s\" >> /opt/csye6225/application.properties\n",
+                v,
+                userName,
+                dbName,
+                userName,
+                ((Double) data.get("db_port")).intValue(),
+                data.get("file_path")));
         return new Instance(instanceName, instanceArgs
                 .instanceType(data.get("instance_type").toString())
                 .ebsBlockDevices(ebsBlockDeviceArgsList)
@@ -228,8 +281,53 @@ public class App {
                 .vpcSecurityGroupIds(securityGroupId.applyValue(Collections::singletonList))
                 .disableApiTermination(false)
                 .tags(Map.of("Name",instanceName))
+                .userData(userData)
+                .build(), CustomResourceOptions.builder()
+                .dependsOn(Collections.singletonList(dbInstance)).build());
+    }
+
+
+    public static com.pulumi.aws.rds.Instance createDBInstance(Map<String, Object> data, List<Subnet> subnetList){
+        String name = data.get("name") + "-csye6225";
+        String dbName = (String) data.get("db_name");
+        String userName = (String) data.get("user_name");
+        Double storageSpace = (Double) data.get("storage_space");
+        Output<String> ec2SecurityGroup = (Output<String>) data.get("database_sg");
+        List<Output<String>> subnetIds = new ArrayList<>();
+        for (Subnet subnet : subnetList) {
+            subnetIds.add(subnet.id());
+        }
+
+        // Create a stack output from the list of subnet IDs
+        Output<List<String>> subnetIdsOutput = Output.all(subnetIds).applyValue(ids -> ids);
+        SubnetGroup subnetGroup = new SubnetGroup(name, SubnetGroupArgs.builder()
+                                                .subnetIds(subnetIdsOutput)
+                                                .build());
+
+        return new com.pulumi.aws.rds.Instance(name,com.pulumi.aws.rds.InstanceArgs
+                .builder()
+                .instanceClass("db.t3.micro")
+                .allowMajorVersionUpgrade(true)
+                .dbName(dbName)
+                .engine("mariadb")
+                .storageType("gp2")
+                .tags(Map.of("Name",name))
+                .autoMinorVersionUpgrade(false)
+                .skipFinalSnapshot(true)
+                .dbSubnetGroupName(subnetGroup.name())
+                .allocatedStorage(storageSpace.intValue())
+                .multiAz(false)
+                .engineVersion("10.11.5")
+                .username(userName)
+                .password(userName)
+                .multiAz(false)
+                .vpcSecurityGroupIds(ec2SecurityGroup.applyValue(Collections::singletonList))
+                .tags(Map.of("Name",name))
                 .build());
     }
+
+
+
 }
 
 
