@@ -15,6 +15,7 @@ config:
     ami_id: ""
     ami_name: "csye6225_2023_*"
     db_port: 3306
+    rdsDBFamily: "mariadb10.11"
     db_name: "csye6225"
     storage_space: 20
     user_name: "csye6225"
