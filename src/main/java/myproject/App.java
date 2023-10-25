@@ -7,6 +7,8 @@ import com.pulumi.aws.ec2.inputs.*;
 import com.pulumi.aws.ec2.outputs.GetAmiResult;
 import com.pulumi.aws.inputs.GetAvailabilityZonesArgs;
 import com.pulumi.aws.outputs.GetAvailabilityZonesResult;
+import com.pulumi.aws.rds.ParameterGroup;
+import com.pulumi.aws.rds.ParameterGroupArgs;
 import com.pulumi.aws.rds.SubnetGroup;
 import com.pulumi.aws.rds.SubnetGroupArgs;
 import com.pulumi.core.Output;
@@ -297,6 +299,12 @@ public class App {
         for (Subnet subnet : subnetList) {
             subnetIds.add(subnet.id());
         }
+        String rdsDBFamily = (String) data.get("rdsDBFamily");
+
+        ParameterGroup rdsDBParameterGroup = new ParameterGroup("rdsgroup", ParameterGroupArgs.builder()
+                .family(rdsDBFamily)
+                .tags(Map.of("Name","rdsgroup"))
+                .build());
 
         // Create a stack output from the list of subnet IDs
         Output<List<String>> subnetIdsOutput = Output.all(subnetIds).applyValue(ids -> ids);
@@ -318,6 +326,7 @@ public class App {
                 .allocatedStorage(storageSpace.intValue())
                 .multiAz(false)
                 .engineVersion("10.11.5")
+                .parameterGroupName(rdsDBParameterGroup.name())
                 .username(userName)
                 .password(userName)
                 .multiAz(false)
@@ -329,7 +338,3 @@ public class App {
 
 
 }
-
-
-
-
