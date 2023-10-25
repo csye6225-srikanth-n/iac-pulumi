@@ -14,4 +14,9 @@ config:
     owner_id: "921922858617"
     ami_id: ""
     ami_name: "csye6225_2023_*"
+    db_port: 3306
+    db_name: "csye6225"
+    storage_space: 20
+    user_name: "csye6225"
+    file_path: "/opt/users.csv"
 
