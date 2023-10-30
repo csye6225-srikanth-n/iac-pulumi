@@ -20,4 +20,5 @@ config:
     storage_space: 20
     user_name: "csye6225"
     file_path: "/opt/users.csv"
+    zone_name: "dev.srikanthnandikonda.me"
 

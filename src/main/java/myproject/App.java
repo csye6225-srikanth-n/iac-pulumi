@@ -5,12 +5,25 @@ import com.pulumi.aws.AwsFunctions;
 import com.pulumi.aws.ec2.*;
 import com.pulumi.aws.ec2.inputs.*;
 import com.pulumi.aws.ec2.outputs.GetAmiResult;
+import com.pulumi.aws.iam.*;
+import static com.pulumi.codegen.internal.Serialization.*;
+import com.pulumi.aws.iam.inputs.GetPolicyArgs;
+import com.pulumi.aws.iam.inputs.GetPolicyDocumentArgs;
+import com.pulumi.aws.iam.inputs.GetPolicyDocumentStatementArgs;
+import com.pulumi.aws.iam.inputs.GetPolicyDocumentStatementPrincipalArgs;
+import com.pulumi.aws.iam.outputs.GetPolicyDocumentResult;
+import com.pulumi.aws.iam.outputs.GetPolicyResult;
 import com.pulumi.aws.inputs.GetAvailabilityZonesArgs;
 import com.pulumi.aws.outputs.GetAvailabilityZonesResult;
 import com.pulumi.aws.rds.ParameterGroup;
 import com.pulumi.aws.rds.ParameterGroupArgs;
 import com.pulumi.aws.rds.SubnetGroup;
 import com.pulumi.aws.rds.SubnetGroupArgs;
+import com.pulumi.aws.route53.Record;
+import com.pulumi.aws.route53.RecordArgs;
+import com.pulumi.aws.route53.Route53Functions;
+import com.pulumi.aws.route53.inputs.GetZoneArgs;
+import com.pulumi.aws.route53.outputs.GetZoneResult;
 import com.pulumi.core.Output;
 import com.pulumi.resources.CustomResourceOptions;
 
@@ -100,6 +113,7 @@ public class App {
                 createDbSecurityGroup(vpc, data);
                 com.pulumi.aws.rds.Instance dbInstance = createDBInstance(data,privateSubNetList);
                 Instance instance =createEc2(publicSubNetList.get(0),data,dbInstance);
+                createARecord(data,instance);
 //                ctx.export("instance-id", instance.id());
                 return  null;
             });
@@ -235,6 +249,47 @@ public class App {
         String instanceName = data.get("name") + "_instance";
         Double size = (Double) data.get("volume");
         Output<String> securityGroupId = (Output<String>) data.get("ec2_sg");
+        final Output<GetPolicyResult> cloudWatchAgentServerPolicy = IamFunctions.getPolicy(GetPolicyArgs.builder()
+                        .name("CloudWatchAgentServerPolicy")
+                .build());
+        final var amazonSSMManagedInstanceCore = IamFunctions.getPolicy(GetPolicyArgs.builder()
+                .name("AmazonSSMManagedInstanceCore")
+                .build());
+        final var amazonEC2RoleforSSM = IamFunctions.getPolicy(GetPolicyArgs.builder()
+                .name("AmazonEC2RoleforSSM")
+                .build());
+
+        final var assumeRole = IamFunctions.getPolicyDocument(GetPolicyDocumentArgs.builder()
+                .statements(GetPolicyDocumentStatementArgs.builder()
+                        .effect("Allow")
+                        .principals(GetPolicyDocumentStatementPrincipalArgs.builder()
+                                .type("Service")
+                                .identifiers("ec2.amazonaws.com")
+                                .build())
+                        .actions("sts:AssumeRole")
+                        .build())
+                .build());
+        var role = new Role("cloudWatchRole", RoleArgs.builder()
+                .assumeRolePolicy(assumeRole.applyValue(GetPolicyDocumentResult::json))
+                .build());
+        RolePolicyAttachment rolePolicyAttachment = new RolePolicyAttachment("cloudWatchRolePolicyAttachment",
+                RolePolicyAttachmentArgs.builder()
+                        .role(role.name())
+                        .policyArn(cloudWatchAgentServerPolicy.applyValue(GetPolicyResult::arn))
+                        .build());
+        RolePolicyAttachment rolePolicyAttachment2 = new RolePolicyAttachment("cloudWatchRolePolicyAttachment2",
+                RolePolicyAttachmentArgs.builder()
+                        .role(role.name())
+                        .policyArn(amazonSSMManagedInstanceCore.applyValue(GetPolicyResult::arn))
+                        .build());
+        RolePolicyAttachment rolePolicyAttachment3 = new RolePolicyAttachment("cloudWatchRolePolicyAttachment3",
+                RolePolicyAttachmentArgs.builder()
+                        .role(role.name())
+                        .policyArn(amazonEC2RoleforSSM.applyValue(GetPolicyResult::arn))
+                        .build());
+        var instanceProfile = new InstanceProfile("instanceProfile", InstanceProfileArgs.builder()
+                .role(role.id())
+                .build());
         InstanceEbsBlockDeviceArgs ebsBlockDevice = InstanceEbsBlockDeviceArgs.builder()
                 .deviceName("/dev/xvda")
                 .volumeType("gp2")
@@ -267,7 +322,10 @@ public class App {
                         "echo \"export DB_NAME=%s\" >> /opt/csye6225/application.properties\n" +
                         "echo \"export DB_PASS=%s\" >> /opt/csye6225/application.properties\n" +
                         "echo \"export DB_PORT=%d\" >> /opt/csye6225/application.properties\n" +
-                        "echo \"export FILE_PATH=%s\" >> /opt/csye6225/application.properties\n",
+                        "echo \"export FILE_PATH=%s\" >> /opt/csye6225/application.properties\n" +
+                        "sudo systemctl start amazon-cloudwatch-agent.service\n" +
+                        "sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 " +
+                        "-c file:/opt/csye6225/cloudwatch-config.json -s \n" +
                 v,
                 userName,
                 dbName,
@@ -284,6 +342,7 @@ public class App {
                 .disableApiTermination(false)
                 .tags(Map.of("Name",instanceName))
                 .userData(userData)
+                .iamInstanceProfile(instanceProfile.id())
                 .build(), CustomResourceOptions.builder()
                 .dependsOn(Collections.singletonList(dbInstance)).build());
     }
@@ -332,6 +391,23 @@ public class App {
                 .multiAz(false)
                 .vpcSecurityGroupIds(ec2SecurityGroup.applyValue(Collections::singletonList))
                 .tags(Map.of("Name",name))
+                .build());
+    }
+
+    public static void createARecord(Map<String, Object> data, Instance instance){
+        String zoneName = data.get("zone_name").toString();
+        final var selected = Route53Functions.getZone(GetZoneArgs
+                                    .builder()
+                                    .name(zoneName)
+                                    .privateZone(false)
+                                    .build());
+
+        var www = new Record("www", RecordArgs.builder()
+                .zoneId(selected.applyValue(GetZoneResult::zoneId))
+                .name(zoneName)
+                .type("A")
+                .ttl(60)
+                .records(instance.publicIp().applyValue(Collections::singletonList))
                 .build());
     }
 
