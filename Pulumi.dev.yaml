@@ -21,4 +21,6 @@ config:
     user_name: "csye6225"
     file_path: "/opt/users.csv"
     zone_name: "dev.srikanthnandikonda.me"
-
+    log_file_path: "/var/log/"
+    domain_name: "dev.srikanthnandikonda.me"
+    api_key: "test"
