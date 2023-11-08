@@ -1,6 +1,6 @@
 encryptionsalt: v1:hHzUYeM9xUI=:v1:J0siEA0cYPzDDunK:2dY87OzzCmGGb/g8Z+Vw1wZUAjcxUg==
 config:
-  aws:region: us-west-1
+  aws:region: us-east-1
   aws:profile: demo
   iac-pulumi:data:
     name: "test"
@@ -14,3 +14,13 @@ config:
     owner_id: "921922858617"
     ami_id: ""
     ami_name: "csye6225_2023_*"
+    db_port: 3306
+    rdsDBFamily: "mariadb10.11"
+    db_name: "csye6225"
+    storage_space: 20
+    user_name: "csye6225"
+    file_path: "/opt/users.csv"
+    zone_name: "demo.srikanthnandikonda.me"
+    log_file_path: "/var/log/"
+    domain_name: "demo.srikanthnandikonda.me"
+    api_key: "test"

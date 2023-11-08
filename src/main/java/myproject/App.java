@@ -241,6 +241,16 @@ public class App {
                         .sourceSecurityGroupId(allowTcp.id())
                         .securityGroupId(securityGroupId)
                         .build());
+        var outBound2 = new SecurityGroupRule("ec2-rds-outbound-2",
+                SecurityGroupRuleArgs.builder()
+                        .description("Allow TCP connections")
+                        .type("egress")
+                        .fromPort(443)
+                        .toPort(443)
+                        .protocol("tcp")
+                        .cidrBlocks("0.0.0.0/0")
+                        .securityGroupId(securityGroupId)
+                        .build());
 
         data.put("database_sg",allowTcp.id());
     }
@@ -323,15 +333,21 @@ public class App {
                         "echo \"export DB_PASS=%s\" >> /opt/csye6225/application.properties\n" +
                         "echo \"export DB_PORT=%d\" >> /opt/csye6225/application.properties\n" +
                         "echo \"export FILE_PATH=%s\" >> /opt/csye6225/application.properties\n" +
-                        "sudo systemctl start amazon-cloudwatch-agent.service\n" +
-                        "sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 " +
-                        "-c file:/opt/csye6225/cloudwatch-config.json -s \n" +
+                        "echo \"export LOG_FILE_PATH=%s\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export YOUR_DOMAIN_NAME=%s\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export API_KEY=%s\" >> /opt/csye6225/application.properties\n" +
+
+                        "sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/cloudwatch/cloudwatch-config.json -s \n" +
+                        "sudo systemctl restart amazon-cloudwatch-agent.service\n" ,
                 v,
                 userName,
                 dbName,
                 userName,
                 ((Double) data.get("db_port")).intValue(),
-                data.get("file_path")));
+                data.get("file_path"),
+                data.get("log_file_path"),
+                data.get("domain_name"),
+                data.get("api_key")));
         return new Instance(instanceName, instanceArgs
                 .instanceType(data.get("instance_type").toString())
                 .ebsBlockDevices(ebsBlockDeviceArgsList)
