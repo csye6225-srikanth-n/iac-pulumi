@@ -1,7 +1,7 @@
-encryptionsalt: v1:jjGTTmHXuTQ=:v1:Il25/gi2r7D7wJWX:zbJcbQwZ2NcG2UzBRlecIoxzen1o+Q==
+encryptionsalt: v1:dRP67KyCSyM=:v1:FbY3M1SQ16rsxipy:VI4ZkO/b8J7q9pOwSIm6FiPvtJoRlg==
 config:
   aws:region: us-east-1
-  aws:profile: dev
+  aws:profile: root
   iac-pulumi:data:
     name : "test"
     cidr-block: "10.0.0.0/16"
@@ -10,7 +10,7 @@ config:
     app_port: 8080
     load_balancer_ports: [80,443]
     volume: 25
-    key_name: "test3"
+    key_name: "test2"
     instance_type: "t2.micro"
     owner_id: "921922858617"
     ami_id: ""
@@ -21,7 +21,11 @@ config:
     storage_space: 20
     user_name: "csye6225"
     file_path: "/opt/users.csv"
-    zone_name: "dev.srikanthnandikonda.me"
+    zone_name: "srikanthnandikonda.me"
     log_file_path: "/var/log/"
-    domain_name: "dev.srikanthnandikonda.me"
+    domain_name: "srikanthnandikonda.me"
     api_key: "test"
+    sg_api_key: "test"
+    template_id: "test"
+#    target_group_arn : "arn:aws:elasticloadbalancing:us-east-1:017960186760:targetgroup/test-target-group/1535e850a715abab"
+    target_group_name: "test-target-group"

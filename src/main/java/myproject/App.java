@@ -2,11 +2,15 @@ package myproject;
 
 import com.pulumi.Pulumi;
 import com.pulumi.aws.AwsFunctions;
+import com.pulumi.aws.autoscaling.inputs.GroupLaunchTemplateArgs;
+import com.pulumi.aws.cloudwatch.MetricAlarmArgs;
+import com.pulumi.aws.lb.*;
+import com.pulumi.aws.autoscaling.GroupArgs;
+import com.pulumi.aws.autoscaling.PolicyArgs;
 import com.pulumi.aws.ec2.*;
 import com.pulumi.aws.ec2.inputs.*;
 import com.pulumi.aws.ec2.outputs.GetAmiResult;
 import com.pulumi.aws.iam.*;
-import static com.pulumi.codegen.internal.Serialization.*;
 import com.pulumi.aws.iam.inputs.GetPolicyArgs;
 import com.pulumi.aws.iam.inputs.GetPolicyDocumentArgs;
 import com.pulumi.aws.iam.inputs.GetPolicyDocumentStatementArgs;
@@ -14,6 +18,10 @@ import com.pulumi.aws.iam.inputs.GetPolicyDocumentStatementPrincipalArgs;
 import com.pulumi.aws.iam.outputs.GetPolicyDocumentResult;
 import com.pulumi.aws.iam.outputs.GetPolicyResult;
 import com.pulumi.aws.inputs.GetAvailabilityZonesArgs;
+import com.pulumi.aws.lb.inputs.GetTargetGroupArgs;
+import com.pulumi.aws.lb.inputs.ListenerDefaultActionArgs;
+import com.pulumi.aws.lb.inputs.TargetGroupHealthCheckArgs;
+//import com.pulumi.aws.lb.inputs.TargetGroupTargetHealthStateArgs;
 import com.pulumi.aws.outputs.GetAvailabilityZonesResult;
 import com.pulumi.aws.rds.ParameterGroup;
 import com.pulumi.aws.rds.ParameterGroupArgs;
@@ -23,14 +31,21 @@ import com.pulumi.aws.route53.Record;
 import com.pulumi.aws.route53.RecordArgs;
 import com.pulumi.aws.route53.Route53Functions;
 import com.pulumi.aws.route53.inputs.GetZoneArgs;
+import com.pulumi.aws.route53.inputs.RecordAliasArgs;
 import com.pulumi.aws.route53.outputs.GetZoneResult;
 import com.pulumi.core.Output;
 import com.pulumi.resources.CustomResourceOptions;
 
+import java.awt.*;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
+import com.pulumi.aws.cloudwatch.MetricAlarm;
+
+import java.util.List;
+import java.util.stream.Collectors;
 
 
 public class App {
@@ -77,7 +92,6 @@ public class App {
                 List<String> strings = calculateSubnets(cidr,noOfZones*2);
                 List<Subnet> publicSubNetList = createPublicSubNets(noOfZones,vpcName,vpc,availabilityZonesResult.names(),strings);
                 List<Subnet> privateSubNetList =createPrivateSubnets(noOfZones,vpcName,vpc,availabilityZonesResult.names(),strings);
-                createSecurityGroup(vpc, data);
 
                 var igw = new InternetGateway("my-igw",
                         InternetGatewayArgs.builder()
@@ -110,16 +124,24 @@ public class App {
                                     .routeTableId(routeTable2.id())
                                     .build());
                 }
+                createLoadBalancerSecurityGroup(vpc, data);
+                createAppSecurityGroup(vpc, data);
                 createDbSecurityGroup(vpc, data);
                 com.pulumi.aws.rds.Instance dbInstance = createDBInstance(data,privateSubNetList);
-                Instance instance =createEc2(publicSubNetList.get(0),data,dbInstance);
-                createARecord(data,instance);
+                createLaunchTemplate(data, privateSubNetList,dbInstance);
+                createTargetGroup(vpc,data);
+                createApplicationLoadBalancer(vpc,data,publicSubNetList);
+                createAutoScalingGroup(vpc,data,publicSubNetList);
+//                Instance instance =createEc2(publicSubNetList.get(0),data,dbInstance);
+                createARecord(data);
 //                ctx.export("instance-id", instance.id());
                 return  null;
             });
             ctx.export("vpc-id", vpc.id());
         });
     }
+
+
 
     public static List<Subnet> createPublicSubNets(int num,String vpcName,Vpc vpc,List<String> list,List<String> subnetStrings){
         List<Subnet> publicSubNetList = new ArrayList<>();
@@ -192,22 +214,36 @@ public class App {
         return InetAddress.getByAddress(bytes).getHostAddress();
     }
 
-    public static void createSecurityGroup(Vpc vpc, Map<String,Object> data){
+    public static void createAppSecurityGroup(Vpc vpc, Map<String,Object> data){
         String security_group = data.get("name") + "_application_security_group";
-        List<Double> ports = (List<Double>) data.get("ports");
         String publicIpString = data.get("public-cidr").toString();
+        Double appPort = (Double) data.get("app_port");
+        Output<String> loadBalanceSG = (Output<String>) data.get("load_balancer_sg");
         List<SecurityGroupIngressArgs> securityGroupIngressArgsList = new ArrayList<>();
-        for(Double port : ports){
-            securityGroupIngressArgsList.add(SecurityGroupIngressArgs.builder()
-                    .fromPort(port.intValue())
-                    .toPort(port.intValue())
-                    .protocol("tcp")
-                    .cidrBlocks(publicIpString).build());
-        }
+
+        securityGroupIngressArgsList.add(SecurityGroupIngressArgs.builder()
+                .fromPort(22)
+                .toPort(22)
+                .protocol("tcp")
+                .cidrBlocks(publicIpString).build());
+        securityGroupIngressArgsList.add(SecurityGroupIngressArgs.builder()
+                .fromPort(appPort.intValue())
+                .toPort(appPort.intValue())
+                .protocol("tcp")
+                .securityGroups(loadBalanceSG.applyValue(Collections::singletonList)).build());
+        List<SecurityGroupEgressArgs> securityGroupEgressArgsList = new ArrayList<>();
+        securityGroupEgressArgsList.add(SecurityGroupEgressArgs.builder()
+                        .description("Allow TCP connections")
+                        .fromPort(443)
+                        .toPort(443)
+                        .protocol("tcp")
+                        .cidrBlocks(publicIpString)
+                        .build());
         var allowTcp = new SecurityGroup(security_group,
                 SecurityGroupArgs.builder()
-                        .description("Allow TCP connections")
+                        .description("Allow connections from load balancer and ssh")
                         .vpcId(vpc.id()).ingress(securityGroupIngressArgsList)
+                        .egress(securityGroupEgressArgsList)
                         .tags(Map.of("Name",security_group))
                         .build());
         data.put("ec2_sg",allowTcp.id());
@@ -215,12 +251,12 @@ public class App {
 
     public static void createDbSecurityGroup(Vpc vpc, Map<String,Object> data){
         String security_group = data.get("name") + "_database_sg";
-        Double port = (Double) data.get("db_port");
+        Double dbPort = (Double) data.get("db_port");
         Output<String> securityGroupId = (Output<String>) data.get("ec2_sg");
         List<SecurityGroupIngressArgs> securityGroupIngressArgsList = new ArrayList<>();
         securityGroupIngressArgsList.add(SecurityGroupIngressArgs.builder()
-                .fromPort(port.intValue())
-                .toPort(port.intValue())
+                .fromPort(dbPort.intValue())
+                .toPort(dbPort.intValue())
                 .protocol("tcp")
                 .securityGroups(securityGroupId.applyValue(Collections::singletonList)).build());
 
@@ -235,24 +271,43 @@ public class App {
                 SecurityGroupRuleArgs.builder()
                         .description("Allow TCP connections")
                         .type("egress")
-                        .fromPort(port.intValue())
-                        .toPort(port.intValue())
+                        .fromPort(dbPort.intValue())
+                        .toPort(dbPort.intValue())
                         .protocol("tcp")
                         .sourceSecurityGroupId(allowTcp.id())
                         .securityGroupId(securityGroupId)
                         .build());
-        var outBound2 = new SecurityGroupRule("ec2-rds-outbound-2",
-                SecurityGroupRuleArgs.builder()
-                        .description("Allow TCP connections")
-                        .type("egress")
-                        .fromPort(443)
-                        .toPort(443)
-                        .protocol("tcp")
-                        .cidrBlocks("0.0.0.0/0")
-                        .securityGroupId(securityGroupId)
-                        .build());
-
         data.put("database_sg",allowTcp.id());
+    }
+
+    private static void createLoadBalancerSecurityGroup(Vpc vpc, Map<String, Object> data) {
+        String load_security_group = data.get("name") + "_load_balancer_security_group";
+        List<Double> ports = (List<Double>) data.get("load_balancer_ports");
+        String publicIpString = data.get("public-cidr").toString();
+        List<SecurityGroupIngressArgs> securityGroupIngressArgsList = new ArrayList<>();
+        for(Double port : ports){
+            securityGroupIngressArgsList.add(SecurityGroupIngressArgs.builder()
+                    .fromPort(port.intValue())
+                    .toPort(port.intValue())
+                    .protocol("tcp")
+                    .cidrBlocks(publicIpString).build());
+        }
+        List<SecurityGroupEgressArgs> securityGroupEgressArgsList = new ArrayList<>();
+        securityGroupEgressArgsList.add(SecurityGroupEgressArgs.builder()
+                .description("Allow TCP connections")
+                .fromPort(0)
+                .toPort(0)
+                .protocol("-1")
+                .cidrBlocks(publicIpString)
+                .build());
+        var loadBalancerSG =new SecurityGroup(load_security_group,
+                SecurityGroupArgs.builder()
+                        .description("Allow TCP connections")
+                        .vpcId(vpc.id()).ingress(securityGroupIngressArgsList)
+                        .egress(securityGroupEgressArgsList)
+                        .tags(Map.of("Name",load_security_group))
+                        .build());
+        data.put("load_balancer_sg",loadBalancerSG.id());
     }
 
     public static Instance createEc2(Subnet subnet, Map<String,Object> data, com.pulumi.aws.rds.Instance dbInstance){
@@ -279,25 +334,25 @@ public class App {
                         .actions("sts:AssumeRole")
                         .build())
                 .build());
-        var role = new Role("cloudWatchRole", RoleArgs.builder()
+        var role = new Role("cloudWatchRole-1", RoleArgs.builder()
                 .assumeRolePolicy(assumeRole.applyValue(GetPolicyDocumentResult::json))
                 .build());
-        RolePolicyAttachment rolePolicyAttachment = new RolePolicyAttachment("cloudWatchRolePolicyAttachment",
+        RolePolicyAttachment rolePolicyAttachment = new RolePolicyAttachment("cloudWatchRolePolicyAttachment-1",
                 RolePolicyAttachmentArgs.builder()
                         .role(role.name())
                         .policyArn(cloudWatchAgentServerPolicy.applyValue(GetPolicyResult::arn))
                         .build());
-        RolePolicyAttachment rolePolicyAttachment2 = new RolePolicyAttachment("cloudWatchRolePolicyAttachment2",
+        RolePolicyAttachment rolePolicyAttachment2 = new RolePolicyAttachment("cloudWatchRolePolicyAttachment2-2",
                 RolePolicyAttachmentArgs.builder()
                         .role(role.name())
                         .policyArn(amazonSSMManagedInstanceCore.applyValue(GetPolicyResult::arn))
                         .build());
-        RolePolicyAttachment rolePolicyAttachment3 = new RolePolicyAttachment("cloudWatchRolePolicyAttachment3",
+        RolePolicyAttachment rolePolicyAttachment3 = new RolePolicyAttachment("cloudWatchRolePolicyAttachment3-4",
                 RolePolicyAttachmentArgs.builder()
                         .role(role.name())
                         .policyArn(amazonEC2RoleforSSM.applyValue(GetPolicyResult::arn))
                         .build());
-        var instanceProfile = new InstanceProfile("instanceProfile", InstanceProfileArgs.builder()
+        var instanceProfile = new InstanceProfile("instanceProfile-1", InstanceProfileArgs.builder()
                 .role(role.id())
                 .build());
         InstanceEbsBlockDeviceArgs ebsBlockDevice = InstanceEbsBlockDeviceArgs.builder()
@@ -336,6 +391,8 @@ public class App {
                         "echo \"export LOG_FILE_PATH=%s\" >> /opt/csye6225/application.properties\n" +
                         "echo \"export YOUR_DOMAIN_NAME=%s\" >> /opt/csye6225/application.properties\n" +
                         "echo \"export API_KEY=%s\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export SG_API_KEY=%s\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export TEMPLATE_ID=%s\" >> /opt/csye6225/application.properties\n" +
 
                         "sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/cloudwatch/cloudwatch-config.json -s \n" +
                         "sudo systemctl restart amazon-cloudwatch-agent.service\n" ,
@@ -347,7 +404,7 @@ public class App {
                 data.get("file_path"),
                 data.get("log_file_path"),
                 data.get("domain_name"),
-                data.get("api_key")));
+                data.get("api_key"),data.get("sg_api_key"),data.get("template_id")));
         return new Instance(instanceName, instanceArgs
                 .instanceType(data.get("instance_type").toString())
                 .ebsBlockDevices(ebsBlockDeviceArgsList)
@@ -410,21 +467,276 @@ public class App {
                 .build());
     }
 
-    public static void createARecord(Map<String, Object> data, Instance instance){
+    private static void createLaunchTemplate(Map<String, Object> data, List<Subnet> privateSubNetList, com.pulumi.aws.rds.Instance dbInstance) {
+        String launch_template = data.get("name") + "_launch_template";
+        String key_name = (String) data.get("key_name");
+        Double size = (Double) data.get("volume");
+
+        String ami_id = (String) data.get("ami_id");
+        String instanceType = (String) data.get("instance_type");
+        LaunchTemplateArgs.Builder builder = LaunchTemplateArgs.builder();
+        final Output<GetAmiResult> customAmi;
+        if(ami_id.isEmpty()){
+            String ami_name = (String) data.get("ami_name");
+            customAmi = Ec2Functions.getAmi(GetAmiArgs.builder()
+                    .mostRecent(true)
+                    .owners(data.get("owner_id").toString())
+                    .filters(GetAmiFilterArgs.builder()
+                            .name("name")
+                            .values(ami_name)
+                            .build())
+                    .build());
+            builder.imageId(customAmi.applyValue(GetAmiResult::id));
+        }else{
+            builder.imageId(ami_id);
+        }
+        Output<String> securityGroupId = (Output<String>) data.get("ec2_sg");
+        String dbName = (String) data.get("db_name");
+        String userName = (String) data.get("user_name");
+        Output<String> userData = dbInstance.address().applyValue(v -> String.format("#!/bin/bash\n" +
+                        "echo \"export DB_HOST=%s\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export DB_USER=%s\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export DB_NAME=%s\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export DB_PASS=%s\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export DB_PORT=%d\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export FILE_PATH=%s\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export LOG_FILE_PATH=%s\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export YOUR_DOMAIN_NAME=%s\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export API_KEY=%s\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export SG_API_KEY=%s\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export TEMPLATE_ID=%s\" >> /opt/csye6225/application.properties\n" +
+                        "sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/cloudwatch/cloudwatch-config.json -s \n" +
+                        "sudo systemctl restart amazon-cloudwatch-agent.service\n" ,
+                v,
+                userName,
+                dbName,
+                userName,
+                ((Double) data.get("db_port")).intValue(),
+                data.get("file_path"),
+                data.get("log_file_path"),
+                data.get("domain_name"),
+                data.get("api_key"),data.get("sg_api_key"),data.get("template_id")));
+        Output<String> encodedUserData = userData.applyValue(s -> Base64.getEncoder().encodeToString(s.getBytes(StandardCharsets.UTF_8)));
+        builder.keyName(key_name);
+        builder.instanceType(instanceType);
+        builder.userData(encodedUserData);
+        builder.vpcSecurityGroupIds(securityGroupId.applyValue(Collections::singletonList));
+        final Output<GetPolicyResult> cloudWatchAgentServerPolicy = IamFunctions.getPolicy(GetPolicyArgs.builder()
+                        .name("CloudWatchAgentServerPolicy")
+                .build());
+        final var amazonSSMManagedInstanceCore = IamFunctions.getPolicy(GetPolicyArgs.builder()
+                .name("AmazonSSMManagedInstanceCore")
+                .build());
+        final var amazonEC2RoleforSSM = IamFunctions.getPolicy(GetPolicyArgs.builder()
+                .name("AmazonEC2RoleforSSM")
+                .build());
+
+        final var assumeRole = IamFunctions.getPolicyDocument(GetPolicyDocumentArgs.builder()
+                .statements(GetPolicyDocumentStatementArgs.builder()
+                        .effect("Allow")
+                        .principals(GetPolicyDocumentStatementPrincipalArgs.builder()
+                                .type("Service")
+                                .identifiers("ec2.amazonaws.com")
+                                .build())
+                        .actions("sts:AssumeRole")
+                        .build())
+                .build());
+        var role = new Role("cloudWatchRole", RoleArgs.builder()
+                .assumeRolePolicy(assumeRole.applyValue(GetPolicyDocumentResult::json))
+                .tags(Map.of("Name","cloudWatchRole"))
+                .build());
+        RolePolicyAttachment rolePolicyAttachment = new RolePolicyAttachment("cloudWatchRolePolicyAttachment",
+                RolePolicyAttachmentArgs.builder()
+                        .role(role.name())
+                        .policyArn(cloudWatchAgentServerPolicy.applyValue(GetPolicyResult::arn))
+                        .build());
+        RolePolicyAttachment rolePolicyAttachment2 = new RolePolicyAttachment("cloudWatchRolePolicyAttachment2",
+                RolePolicyAttachmentArgs.builder()
+                        .role(role.name())
+                        .policyArn(amazonSSMManagedInstanceCore.applyValue(GetPolicyResult::arn))
+                        .build());
+        RolePolicyAttachment rolePolicyAttachment3 = new RolePolicyAttachment("cloudWatchRolePolicyAttachment3",
+                RolePolicyAttachmentArgs.builder()
+                        .role(role.name())
+                        .policyArn(amazonEC2RoleforSSM.applyValue(GetPolicyResult::arn))
+                        .build());
+        var instanceProfile = new InstanceProfile("instanceProfile", InstanceProfileArgs.builder()
+                .role(role.id())
+                .build());
+
+        builder.blockDeviceMappings(LaunchTemplateBlockDeviceMappingArgs.builder()
+                .deviceName("/dev/xvda")
+                .ebs(LaunchTemplateBlockDeviceMappingEbsArgs.builder()
+                        .volumeSize(size.intValue())
+                        .volumeType("gp2")
+                        .deleteOnTermination(String.valueOf(true))
+                        .build())
+                .build());
+        builder.iamInstanceProfile(LaunchTemplateIamInstanceProfileArgs.builder()
+                .arn(instanceProfile.arn())
+                .build());
+        builder.disableApiTermination(false);
+        builder.tagSpecifications(LaunchTemplateTagSpecificationArgs.builder()
+                .resourceType("instance")
+                .tags(Map.of("Name",launch_template))
+                .build());
+        LaunchTemplate launchTemplate = new LaunchTemplate(launch_template, builder.build());
+        data.put("launch_template",launchTemplate.id());
+    }
+
+
+    public static void createARecord(Map<String, Object> data){
         String zoneName = data.get("zone_name").toString();
         final var selected = Route53Functions.getZone(GetZoneArgs
                                     .builder()
                                     .name(zoneName)
                                     .privateZone(false)
                                     .build());
-
-        var www = new Record("www", RecordArgs.builder()
+        Output<String> zoneId = (Output<String>) data.get("load_balancer_zone_id");
+        Output<String> loadBalancerDns = (Output<String>) data.get("load_balancer_dns");
+        var aliasLoadBalancer = new Record("alias-loadbalancer", RecordArgs.builder()
                 .zoneId(selected.applyValue(GetZoneResult::zoneId))
                 .name(zoneName)
                 .type("A")
-                .ttl(60)
-                .records(instance.publicIp().applyValue(Collections::singletonList))
+                .aliases(RecordAliasArgs.builder()
+                        .name(loadBalancerDns)
+                        .zoneId(zoneId)
+                        .evaluateTargetHealth(true)
+                        .build())
                 .build());
+    }
+
+    public static void createTargetGroup(Vpc vpc, Map<String,Object> data){
+        String target_group_name = (String) data.get("target_group_name");
+
+        try{
+//            List<TargetGroupTargetHealthStateArgs> targetHealthStates = new ArrayList<>();
+//            targetHealthStates.add(TargetGroupTargetHealthStateArgs.builder()
+//                    .enableUnhealthyConnectionTermination(Output.of(false))
+//                    .build());
+
+            var tcp_example = new TargetGroup(target_group_name, TargetGroupArgs.builder()
+                    .port(8080)
+                    .protocol("HTTP")
+                    .vpcId(vpc.id())
+                    .healthCheck(TargetGroupHealthCheckArgs.builder()
+                            .enabled(true)
+                            .healthyThreshold(3)
+                            .interval(30)
+                            .matcher("200")
+                            .path("/healthz")
+                            .port("8080")
+                            .protocol("HTTP")
+                            .timeout(5)
+                            .unhealthyThreshold(3)
+                            .build())
+                    .build());
+            data.put("target_group_arn",tcp_example.arn());
+        }catch (Exception e){
+            System.out.println("Created Target Group");
+        }
+//        final var test = LbFunctions.getTargetGroup(GetTargetGroupArgs.builder()
+//                .arn(data.get("target_group_arn").toString())
+//                .name(target_group_name)
+//                .build());
+    }
+
+    public static void createApplicationLoadBalancer(Vpc vpc, Map<String,Object> data, List<Subnet> publicSubNetList){
+        List<Output<String>> subnetIds = new ArrayList<>();
+        Output<String> securityGroupId = (Output<String>) data.get("load_balancer_sg");
+        for (Subnet subnet : publicSubNetList) {
+            subnetIds.add(subnet.id());
+        }
+        Output<String> targetGroupArn = (Output<String>) data.get("target_group_arn");
+        Output<List<String>> subnetIdsOutput = Output.all(subnetIds).applyValue(ids -> ids);
+        String load_balancer_name = data.get("name") + "-load-balancer";
+        var loadBalancer = new LoadBalancer(load_balancer_name, LoadBalancerArgs.builder()
+                .internal(false)
+                .ipAddressType("ipv4")
+                .loadBalancerType("application")
+                .tags(Map.of("Name",load_balancer_name))
+                .securityGroups(securityGroupId.applyValue(Collections::singletonList))
+                .subnets(subnetIdsOutput)
+                .build());
+        data.put("load_balancer_arn",loadBalancer.arn());
+        data.put("load_balancer_dns",loadBalancer.dnsName());
+        data.put("load_balancer_zone_id",loadBalancer.zoneId());
+        var listener = new Listener("listener", ListenerArgs.builder()
+                .loadBalancerArn(loadBalancer.arn())
+                .port(80)
+                .protocol("HTTP")
+                .defaultActions(Collections.singletonList(ListenerDefaultActionArgs.builder()
+                        .type("forward")
+                        .targetGroupArn(targetGroupArn)
+                        .build()))
+                .build());
+
+    }
+
+
+    public static void createAutoScalingGroup(Vpc vpc, Map<String,Object> data, List<Subnet> publicSubNetList){
+        String name = data.get("name") + "-auto-scaling-group";
+        List<Output<String>> subnetIds = new ArrayList<>();
+        Output<String> securityGroupId = (Output<String>) data.get("load_balancer_sg");
+        for (Subnet subnet : publicSubNetList) {
+            subnetIds.add(subnet.id());
+        }
+        Output<String> targetGroupArn = (Output<String>) data.get("target_group_arn");
+        Output<List<String>> subnetIdsOutput = Output.all(subnetIds).applyValue(ids -> ids);
+        Output<String> launchTemplate = (Output<String>) data.get("launch_template");
+        Output<String> loadBalancerArn = (Output<String>) data.get("load_balancer_arn");
+        var autoScalingGroup = new com.pulumi.aws.autoscaling.Group(name, GroupArgs.builder()
+                .maxSize(3)
+                .minSize(1)
+                .healthCheckGracePeriod(300)
+                .healthCheckType("ELB")
+                .forceDelete(false)
+                .terminationPolicies(Collections.singletonList("OldestInstance"))
+                .vpcZoneIdentifiers(subnetIdsOutput)
+                .metricsGranularity("1Minute")
+                .targetGroupArns(targetGroupArn.applyValue(Collections::singletonList))
+                .launchTemplate(GroupLaunchTemplateArgs.builder().id(launchTemplate).build())
+                .build());
+
+        var scalueUp = new com.pulumi.aws.autoscaling.Policy("scale-up-policy", PolicyArgs.builder()
+                .scalingAdjustment(1)
+                .adjustmentType("ChangeInCapacity")
+                .policyType("SimpleScaling")
+                .cooldown(300)
+                .autoscalingGroupName(autoScalingGroup.name())
+                .build());
+        var scalueDown = new com.pulumi.aws.autoscaling.Policy("scale-down-policy", PolicyArgs.builder()
+                .scalingAdjustment(-1)
+                .adjustmentType("ChangeInCapacity")
+                .policyType("SimpleScaling")
+                .cooldown(300)
+                .autoscalingGroupName(autoScalingGroup.name())
+                .build());
+        var scaleUpAlarm = new MetricAlarm("scale-up-alarm",
+                MetricAlarmArgs.builder()
+                        .comparisonOperator("GreaterThanOrEqualToThreshold")
+                        .evaluationPeriods(2)
+                        .metricName("CPUUtilization")
+                        .namespace("AWS/EC2")
+                        .period(60)
+                        .statistic("Average").threshold(5.0)
+                        .alarmDescription("Alarm if server CPU too high")
+                        .alarmActions(scalueUp.arn().applyValue(Collections::singletonList))
+                        .dimensions(autoScalingGroup.name().applyValue(s -> Map.of("AutoScalingGroupName", s)))
+                        .build()
+        );
+        var scaleDownAlarm = new MetricAlarm("scale-down-alarm",
+                MetricAlarmArgs.builder()
+                        .comparisonOperator("LessThanOrEqualToThreshold")
+                        .evaluationPeriods(2)
+                        .metricName("CPUUtilization")
+                        .namespace("AWS/EC2")
+                        .period(60)
+                        .statistic("Average").threshold(3.0)
+                        .alarmDescription("Alarm if server CPU too low")
+                        .alarmActions(scalueDown.arn().applyValue(Collections::singletonList))
+                        .dimensions(autoScalingGroup.name().applyValue(s -> Map.of("AutoScalingGroupName", s)))
+                        .build());
     }
 
 
