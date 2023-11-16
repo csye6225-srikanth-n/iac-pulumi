@@ -3,6 +3,7 @@ package myproject;
 import com.pulumi.Pulumi;
 import com.pulumi.aws.AwsFunctions;
 import com.pulumi.aws.autoscaling.inputs.GroupLaunchTemplateArgs;
+import com.pulumi.aws.autoscaling.inputs.GroupTagArgs;
 import com.pulumi.aws.cloudwatch.MetricAlarmArgs;
 import com.pulumi.aws.lb.*;
 import com.pulumi.aws.autoscaling.GroupArgs;
@@ -694,6 +695,7 @@ public class App {
                 .terminationPolicies(Collections.singletonList("OldestInstance"))
                 .vpcZoneIdentifiers(subnetIdsOutput)
                 .metricsGranularity("1Minute")
+                .tags(GroupTagArgs.builder().propagateAtLaunch(true).key("Name").value(name).build(),GroupTagArgs.builder().propagateAtLaunch(true).key("Project").value("csye6225").build())
                 .targetGroupArns(targetGroupArn.applyValue(Collections::singletonList))
                 .launchTemplate(GroupLaunchTemplateArgs.builder().id(launchTemplate).build())
                 .build());
