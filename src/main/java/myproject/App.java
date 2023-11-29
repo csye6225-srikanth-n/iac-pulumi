@@ -49,6 +49,8 @@ import com.pulumi.core.Output;
 import com.pulumi.gcp.serviceaccount.*;
 import com.pulumi.gcp.storage.Bucket;
 import com.pulumi.gcp.storage.BucketArgs;
+import com.pulumi.gcp.storage.BucketIAMBinding;
+import com.pulumi.gcp.storage.BucketIAMBindingArgs;
 import com.pulumi.gcp.storage.inputs.*;
 import com.pulumi.resources.CustomResourceOptions;
 
@@ -834,6 +836,12 @@ public class App {
                                 .build())
                         .build())
                 .build());
+        var storageBinding = new BucketIAMBinding("storageAdminForLambda", BucketIAMBindingArgs.builder()
+                .role("roles/storage.admin")
+                .members(sa.email().applyValue(email -> "serviceAccount:" + email).applyValue(Collections::singletonList))
+                .bucket(assignmentStorage.id())
+//                    .serviceAccountId(serviceAccount.id())
+                .build());
         data.put("gcp_bucket_name",assignmentStorage.name());
         return assignmentStorage;
     }
@@ -917,6 +925,7 @@ public class App {
         env.put("GCP_BUCKET_NAME", bucketName);
         env.put("SG_API_KEY", Output.of(properties.getProperty("SG_API_KEY")));
         env.put("TEMPLATE_ID", Output.of(map.get("template_id").toString()));
+        env.put("TEMPLATE_ID_FAILED", Output.of(map.get("template_id_failed").toString()));
         Output<Map<String, String>> outputEnv = Output.all(env.values()).applyValue(values -> {
             Map<String, String> finalEnv = new HashMap<>();
             int i = 0;
@@ -933,10 +942,11 @@ public class App {
         resources.add(lambdaLogs);
         resources.add(dynamoDB);
         Function testLambda = new Function("testLambda", FunctionArgs.builder()
-                .code(new FileArchive("C:\\Users\\srika\\CSYE6225\\pulumi\\src\\main\\java\\myproject\\serverless.zip"))
+                .code(new FileArchive(map.get("file_name").toString()))
                 .role(iamForLambda.arn())
                 .handler("index.handler")
                 .runtime("nodejs18.x")
+                .timeout(300)
                 .environment(FunctionEnvironmentArgs.builder()
                         .variables(outputEnv)
                         .build())
