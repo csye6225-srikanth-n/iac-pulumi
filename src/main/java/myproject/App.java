@@ -1,11 +1,20 @@
 package myproject;
 
 import com.pulumi.Pulumi;
+import com.pulumi.asset.FileArchive;
 import com.pulumi.aws.AwsFunctions;
 import com.pulumi.aws.autoscaling.inputs.GroupLaunchTemplateArgs;
 import com.pulumi.aws.autoscaling.inputs.GroupTagArgs;
+import com.pulumi.aws.cloudwatch.LogGroup;
+import com.pulumi.aws.cloudwatch.LogGroupArgs;
 import com.pulumi.aws.cloudwatch.MetricAlarmArgs;
+import com.pulumi.aws.dynamodb.Table;
+import com.pulumi.aws.dynamodb.TableArgs;
+import com.pulumi.aws.dynamodb.inputs.TableAttributeArgs;
+import com.pulumi.aws.lambda.*;
+import com.pulumi.aws.lambda.inputs.FunctionEnvironmentArgs;
 import com.pulumi.aws.lb.*;
+
 import com.pulumi.aws.autoscaling.GroupArgs;
 import com.pulumi.aws.autoscaling.PolicyArgs;
 import com.pulumi.aws.ec2.*;
@@ -19,7 +28,6 @@ import com.pulumi.aws.iam.inputs.GetPolicyDocumentStatementPrincipalArgs;
 import com.pulumi.aws.iam.outputs.GetPolicyDocumentResult;
 import com.pulumi.aws.iam.outputs.GetPolicyResult;
 import com.pulumi.aws.inputs.GetAvailabilityZonesArgs;
-import com.pulumi.aws.lb.inputs.GetTargetGroupArgs;
 import com.pulumi.aws.lb.inputs.ListenerDefaultActionArgs;
 import com.pulumi.aws.lb.inputs.TargetGroupHealthCheckArgs;
 //import com.pulumi.aws.lb.inputs.TargetGroupTargetHealthStateArgs;
@@ -34,23 +42,43 @@ import com.pulumi.aws.route53.Route53Functions;
 import com.pulumi.aws.route53.inputs.GetZoneArgs;
 import com.pulumi.aws.route53.inputs.RecordAliasArgs;
 import com.pulumi.aws.route53.outputs.GetZoneResult;
+import com.pulumi.aws.sns.Topic;
+import com.pulumi.aws.sns.TopicSubscription;
+import com.pulumi.aws.sns.TopicSubscriptionArgs;
 import com.pulumi.core.Output;
+import com.pulumi.gcp.serviceaccount.*;
+import com.pulumi.gcp.storage.Bucket;
+import com.pulumi.gcp.storage.BucketArgs;
+import com.pulumi.gcp.storage.inputs.*;
 import com.pulumi.resources.CustomResourceOptions;
 
-import java.awt.*;
+import java.io.FileInputStream;
+import java.io.IOException;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import com.pulumi.aws.cloudwatch.MetricAlarm;
+import com.pulumi.resources.Resource;
 
+import javax.naming.Binding;
 import java.util.List;
 import java.util.stream.Collectors;
 
 
 public class App {
+
     public static void main(String[] args) {
+
+        Properties properties = new Properties();
+        try (FileInputStream fis = new FileInputStream(".env")) {
+            properties.load(fis);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+
         Pulumi.run(ctx -> {
             var config = ctx.config();
             Map<String,Object> data = config.requireObject("data", Map.class);
@@ -128,13 +156,18 @@ public class App {
                 createLoadBalancerSecurityGroup(vpc, data);
                 createAppSecurityGroup(vpc, data);
                 createDbSecurityGroup(vpc, data);
-                com.pulumi.aws.rds.Instance dbInstance = createDBInstance(data,privateSubNetList);
-                createLaunchTemplate(data, privateSubNetList,dbInstance);
+                com.pulumi.aws.rds.Instance dbInstance = createDBInstance(data,publicSubNetList);
+                Topic snsTopic = createSNSTopic(data);
+                createLaunchTemplate(data, dbInstance, snsTopic);
                 createTargetGroup(vpc,data);
                 createApplicationLoadBalancer(vpc,data,publicSubNetList);
                 createAutoScalingGroup(vpc,data,publicSubNetList);
 //                Instance instance =createEc2(publicSubNetList.get(0),data,dbInstance);
                 createARecord(data);
+                Bucket assignemntStorage = createGCPResources(data);
+                createLambdaFunction(data,assignemntStorage,properties);
+                createDynamoDB(data);
+//                ctx.log().info(data.get("gcp_service_account_key").toString());
 //                ctx.export("instance-id", instance.id());
                 return  null;
             });
@@ -259,7 +292,8 @@ public class App {
                 .fromPort(dbPort.intValue())
                 .toPort(dbPort.intValue())
                 .protocol("tcp")
-                .securityGroups(securityGroupId.applyValue(Collections::singletonList)).build());
+                .cidrBlocks("0.0.0.0/0").build());
+//                .securityGroups(securityGroupId.applyValue(Collections::singletonList)).build());
 
 
         var allowTcp = new SecurityGroup(security_group,
@@ -468,7 +502,7 @@ public class App {
                 .build());
     }
 
-    private static void createLaunchTemplate(Map<String, Object> data, List<Subnet> privateSubNetList, com.pulumi.aws.rds.Instance dbInstance) {
+    private static void createLaunchTemplate(Map<String, Object> data, com.pulumi.aws.rds.Instance dbInstance, Topic snsTopic) {
         String launch_template = data.get("name") + "_launch_template";
         String key_name = (String) data.get("key_name");
         Double size = (Double) data.get("volume");
@@ -494,7 +528,10 @@ public class App {
         Output<String> securityGroupId = (Output<String>) data.get("ec2_sg");
         String dbName = (String) data.get("db_name");
         String userName = (String) data.get("user_name");
-        Output<String> userData = dbInstance.address().applyValue(v -> String.format("#!/bin/bash\n" +
+        Output<String> srn = (Output<String>) data.get("sns_topic_arn");
+        Output<String> dbData = dbInstance.address();
+
+        Output<String> userData = Output.all(srn,dbData).applyValue(v -> String.format("#!/bin/bash\n" +
                         "echo \"export DB_HOST=%s\" >> /opt/csye6225/application.properties\n" +
                         "echo \"export DB_USER=%s\" >> /opt/csye6225/application.properties\n" +
                         "echo \"export DB_NAME=%s\" >> /opt/csye6225/application.properties\n" +
@@ -506,9 +543,11 @@ public class App {
                         "echo \"export API_KEY=%s\" >> /opt/csye6225/application.properties\n" +
                         "echo \"export SG_API_KEY=%s\" >> /opt/csye6225/application.properties\n" +
                         "echo \"export TEMPLATE_ID=%s\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export TOPIC_ARN=%s\" >> /opt/csye6225/application.properties\n" +
+                        "echo \"export REGION=%s\" >> /opt/csye6225/application.properties\n" +
                         "sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/cloudwatch/cloudwatch-config.json -s \n" +
                         "sudo systemctl restart amazon-cloudwatch-agent.service\n" ,
-                v,
+                v.get(1),
                 userName,
                 dbName,
                 userName,
@@ -516,7 +555,8 @@ public class App {
                 data.get("file_path"),
                 data.get("log_file_path"),
                 data.get("domain_name"),
-                data.get("api_key"),data.get("sg_api_key"),data.get("template_id")));
+                data.get("api_key"),data.get("sg_api_key"),data.get("template_id"),v.get(0),
+                data.get("region")));
         Output<String> encodedUserData = userData.applyValue(s -> Base64.getEncoder().encodeToString(s.getBytes(StandardCharsets.UTF_8)));
         builder.keyName(key_name);
         builder.instanceType(instanceType);
@@ -531,7 +571,9 @@ public class App {
         final var amazonEC2RoleforSSM = IamFunctions.getPolicy(GetPolicyArgs.builder()
                 .name("AmazonEC2RoleforSSM")
                 .build());
-
+        final var amazonEC2RoleforSSN = IamFunctions.getPolicy(GetPolicyArgs.builder()
+                .name("AmazonSNSFullAccess")
+                .build());
         final var assumeRole = IamFunctions.getPolicyDocument(GetPolicyDocumentArgs.builder()
                 .statements(GetPolicyDocumentStatementArgs.builder()
                         .effect("Allow")
@@ -561,6 +603,11 @@ public class App {
                         .role(role.name())
                         .policyArn(amazonEC2RoleforSSM.applyValue(GetPolicyResult::arn))
                         .build());
+        RolePolicyAttachment rolePolicyAttachment4 = new RolePolicyAttachment("snsRolePolicyAttachment",
+                RolePolicyAttachmentArgs.builder()
+                        .role(role.name())
+                        .policyArn(amazonEC2RoleforSSN.applyValue(GetPolicyResult::arn))
+                        .build());
         var instanceProfile = new InstanceProfile("instanceProfile", InstanceProfileArgs.builder()
                 .role(role.id())
                 .build());
@@ -581,7 +628,8 @@ public class App {
                 .resourceType("instance")
                 .tags(Map.of("Name",launch_template))
                 .build());
-        LaunchTemplate launchTemplate = new LaunchTemplate(launch_template, builder.build());
+        LaunchTemplate launchTemplate = new LaunchTemplate(launch_template, builder.build(),CustomResourceOptions.builder()
+                .dependsOn(Collections.singletonList(snsTopic)).build());
         data.put("launch_template",launchTemplate.id());
     }
 
@@ -739,6 +787,211 @@ public class App {
                         .alarmActions(scalueDown.arn().applyValue(Collections::singletonList))
                         .dimensions(autoScalingGroup.name().applyValue(s -> Map.of("AutoScalingGroupName", s)))
                         .build());
+    }
+
+    public static Topic  createSNSTopic(Map<String, Object> data){
+        String topicName = data.get("name") + "-sns-topic";
+        Topic topic = new Topic(topicName, com.pulumi.aws.sns.TopicArgs.builder()
+                .displayName(topicName)
+                .build());
+        data.put("sns_topic_arn",topic.arn());
+        return topic;
+    }
+
+    public static Bucket createGCPResources(Map<String,Object> data){
+
+
+        String name = data.get("name").toString();
+        var sa = new Account(name + "lambda", AccountArgs.builder()
+                .accountId("lambda-account")
+                .displayName("A service account that be used by AWS lambda function")
+                .build());
+        Output<String> serviceAccountEmail = sa.email().applyValue(v -> "serviceAccount:" + v);
+        Output<List<String>> serviceAccountEmails = serviceAccountEmail.applyValue(Collections::singletonList);
+//        var iamBinding = new IAMBinding("iamBinding", IAMBindingArgs.builder()
+//                .role("roles/storage.objectCreator")
+//                .members(serviceAccountEmails)
+//                .build());
+
+        Key key = new Key("key", KeyArgs.builder()
+                .serviceAccountId(sa.name())
+                .build());
+        data.put("gcp_service_account",sa.email());
+        data.put("gcp_service_account_key",key.privateKey());
+        Bucket assignmentStorage = new Bucket("assignment-storage", BucketArgs.builder()
+                .forceDestroy(true)
+                .publicAccessPrevention("enforced")
+                .location("US")
+                .versioning(BucketVersioningArgs.builder()
+                        .enabled(true)
+                        .build())
+                .lifecycleRules(BucketLifecycleRuleArgs.builder()
+                        .action(BucketLifecycleRuleActionArgs.builder()
+                                .type("Delete")
+                                .build())
+                        .condition(BucketLifecycleRuleConditionArgs.builder()
+                                .numNewerVersions(4)
+                                .build())
+                        .build())
+                .build());
+        data.put("gcp_bucket_name",assignmentStorage.name());
+        return assignmentStorage;
+    }
+
+    public static void createLambdaFunction(Map<String, Object> map, Bucket assignemntStorage,Properties properties){
+        final var assumeRole = IamFunctions.getPolicyDocument(GetPolicyDocumentArgs.builder()
+                .statements(GetPolicyDocumentStatementArgs.builder()
+                        .effect("Allow")
+                        .principals(GetPolicyDocumentStatementPrincipalArgs.builder()
+                                .type("Service")
+                                .identifiers("lambda.amazonaws.com")
+                                .build())
+                        .actions("sts:AssumeRole")
+                        .build())
+                .build());
+
+
+        var iamForLambda = new Role("iamForLambda", RoleArgs.builder()
+                .assumeRolePolicy(assumeRole.applyValue(GetPolicyDocumentResult::json))
+                .build());
+
+        final var lambdaLoggingPolicyDocument = IamFunctions.getPolicyDocument(GetPolicyDocumentArgs.builder()
+                .statements(GetPolicyDocumentStatementArgs.builder()
+                        .effect("Allow")
+                        .actions(
+                                "logs:CreateLogGroup",
+                                "logs:CreateLogStream",
+                                "logs:PutLogEvents")
+                        .resources("arn:aws:logs:*:*:*")
+                        .build())
+                .build());
+
+        final var dynamoDBPolicyDocument = IamFunctions.getPolicyDocument(GetPolicyDocumentArgs.builder()
+                .statements(GetPolicyDocumentStatementArgs.builder()
+                        .effect("Allow")
+                        .actions(
+                                "dynamodb:PutItem",
+                                "dynamodb:GetItem",
+                                "dynamodb:DeleteItem",
+                                "dynamodb:UpdateItem")
+                        .resources("arn:aws:dynamodb:*:*:*")
+                        .build())
+                .build());
+
+        var lambdaLoggingPolicy = new Policy("lambdaLoggingPolicy", com.pulumi.aws.iam.PolicyArgs.builder()
+                .path("/")
+                .description("IAM policy for logging from a lambda")
+                .policy(lambdaLoggingPolicyDocument.applyValue(GetPolicyDocumentResult::json))
+                .build());
+
+        var dynamoDBPolicy = new Policy("dynamoDBPolicy", com.pulumi.aws.iam.PolicyArgs.builder()
+                .path("/")
+                .description("IAM policy for dynamoDB")
+                .policy(dynamoDBPolicyDocument.applyValue(GetPolicyDocumentResult::json))
+                .build());
+
+        var lambdaLogs = new RolePolicyAttachment("lambdaLogs", RolePolicyAttachmentArgs.builder()
+                .role(iamForLambda.name())
+                .policyArn(lambdaLoggingPolicy.arn())
+                .build());
+
+        var dynamoDB = new RolePolicyAttachment("dynamoDB", RolePolicyAttachmentArgs.builder()
+                .role(iamForLambda.name())
+                .policyArn(dynamoDBPolicy.arn())
+                .build());
+
+//        Map<String,String> env = new HashMap<>();
+//        Output<String> key = (Output<String>) map.get("gcp_service_account_key");
+//        key.applyValue(v -> {
+//           env.put("GCP_SERVICE_ACCOUNT_KEY",v);
+//           return v;
+//        });
+//        env.put("GCP_BUCKET_NAME",map.get("bucket_name").toString());
+//        Output<Map<String,String>> input= Output.of(env);
+
+        Map<String, Output<String>> env = new HashMap<>();
+        Output<String> key = (Output<String>) map.get("gcp_service_account_key");
+        Output<String> bucketName = (Output<String>) map.get("gcp_bucket_name");
+        env.put("GCP_SERVICE_ACCOUNT_KEY", key);
+
+        env.put("GCP_BUCKET_NAME", bucketName);
+        env.put("SG_API_KEY", Output.of(properties.getProperty("SG_API_KEY")));
+        env.put("TEMPLATE_ID", Output.of(map.get("template_id").toString()));
+        Output<Map<String, String>> outputEnv = Output.all(env.values()).applyValue(values -> {
+            Map<String, String> finalEnv = new HashMap<>();
+            int i = 0;
+            for (String k : env.keySet()) {
+                finalEnv.put(k, values.get(i));
+                i++;
+            }
+            return finalEnv;
+        });
+
+
+        List<Resource> resources = new ArrayList<>();
+        resources.add(assignemntStorage);
+        resources.add(lambdaLogs);
+        resources.add(dynamoDB);
+        Function testLambda = new Function("testLambda", FunctionArgs.builder()
+                .code(new FileArchive("C:\\Users\\srika\\CSYE6225\\pulumi\\src\\main\\java\\myproject\\serverless.zip"))
+                .role(iamForLambda.arn())
+                .handler("index.handler")
+                .runtime("nodejs18.x")
+                .environment(FunctionEnvironmentArgs.builder()
+                        .variables(outputEnv)
+                        .build())
+                .build(), CustomResourceOptions.builder().dependsOn(resources).build());
+        Output<String> topicArn = (Output<String>) map.get("sns_topic_arn");
+        TopicSubscription eventSourceMapping = new TopicSubscription("topic-subscription", TopicSubscriptionArgs.builder()
+                .topic(topicArn)
+                .protocol("lambda")
+                .endpoint(testLambda.arn())
+                .build());
+        Permission permission = new Permission("permission", PermissionArgs.builder()
+                .function(testLambda.name())
+                .action("lambda:InvokeFunction")
+                .principal("sns.amazonaws.com")
+                .sourceArn(topicArn)
+                .build());
+    }
+
+    public static void createDynamoDB(Map<String,Object> data){
+        String tableName = "assignment-submissions";
+        var table = new Table(tableName, TableArgs.builder()
+                .name(tableName)
+                .billingMode("PROVISIONED")
+                .attributes(TableAttributeArgs.builder()
+                        .name("submission_id")
+                        .type("S")
+                        .build())
+//                        TableAttributeArgs.builder()
+//                                .name("submission_url")
+//                                .type("S")
+//                                .build(),
+//                        TableAttributeArgs.builder()
+//                                .name("timestamp")
+//                                .type("S")
+//                                .build(),
+//                        TableAttributeArgs.builder()
+//                                .name("mail_status")
+//                                .type("S")
+//                                .build(),
+//                        TableAttributeArgs.builder()
+//                                .name("email_id")
+//                                .type("S")
+//                                .build(),
+//                        TableAttributeArgs.builder()
+//                                .name("assignment_id")
+//                                .type("S")
+//                                .build())
+                .tags(Map.ofEntries(
+                        Map.entry("Environment", "development"),
+                        Map.entry("Name", "assignment-submissions")
+                ))
+                .hashKey("submission_id")
+                .writeCapacity(5)
+                .readCapacity(5)
+                .build());
     }
 
 
