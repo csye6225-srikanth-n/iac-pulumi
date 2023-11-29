@@ -28,6 +28,16 @@
             <artifactId>aws</artifactId>
             <version>6.6.1</version>
         </dependency>
+        <dependency>
+            <groupId>me.paulschwarz</groupId>
+            <artifactId>spring-dotenv</artifactId>
+            <version>4.0.0</version>
+        </dependency>
+        <dependency>
+            <groupId>com.pulumi</groupId>
+            <artifactId>gcp</artifactId>
+            <version>7.2.0-alpha.1700200283+c481d6b4</version>
+        </dependency>
     </dependencies>
 
     <build>

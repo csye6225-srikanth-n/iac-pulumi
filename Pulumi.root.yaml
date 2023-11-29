@@ -2,6 +2,7 @@ encryptionsalt: v1:dRP67KyCSyM=:v1:FbY3M1SQ16rsxipy:VI4ZkO/b8J7q9pOwSIm6FiPvtJoR
 config:
   aws:region: us-east-1
   aws:profile: root
+  gcp:project: deve-405518
   iac-pulumi:data:
     name : "test"
     cidr-block: "10.0.0.0/16"
@@ -26,6 +27,7 @@ config:
     domain_name: "srikanthnandikonda.me"
     api_key: "test"
     sg_api_key: "test"
-    template_id: "test"
-#    target_group_arn : "arn:aws:elasticloadbalancing:us-east-1:017960186760:targetgroup/test-target-group/1535e850a715abab"
+    template_id: "d-0be524d713f3454e8f740905986d6d1a"
     target_group_name: "test-target-group"
+    region: "us-east-1"
+    bucket_name: "assignment-storage"
