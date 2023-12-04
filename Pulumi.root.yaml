@@ -33,4 +33,5 @@ config:
     target_group_name: "test-target-group"
     region: "us-east-1"
     bucket_name: "assignment-storage"
-    file_name: "C:\\Users\\srika\\CSYE6225\\serverless"
+    file_name: "C:\\Users\\srika\\Downloads\\srikanth_nandikonda_002737724_09\\serverless"
+    certificate_arn: "arn:aws:iam::017960186760:server-certificate/srikanthnandikonda.me"
