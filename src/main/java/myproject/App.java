@@ -714,8 +714,9 @@ public class App {
         data.put("load_balancer_zone_id",loadBalancer.zoneId());
         var listener = new Listener("listener", ListenerArgs.builder()
                 .loadBalancerArn(loadBalancer.arn())
-                .port(80)
-                .protocol("HTTP")
+                .port(443)
+                .protocol("HTTPS")
+                .certificateArn(data.get("certificate_arn").toString())
                 .defaultActions(Collections.singletonList(ListenerDefaultActionArgs.builder()
                         .type("forward")
                         .targetGroupArn(targetGroupArn)
@@ -974,26 +975,7 @@ public class App {
                         .name("submission_id")
                         .type("S")
                         .build())
-//                        TableAttributeArgs.builder()
-//                                .name("submission_url")
-//                                .type("S")
-//                                .build(),
-//                        TableAttributeArgs.builder()
-//                                .name("timestamp")
-//                                .type("S")
-//                                .build(),
-//                        TableAttributeArgs.builder()
-//                                .name("mail_status")
-//                                .type("S")
-//                                .build(),
-//                        TableAttributeArgs.builder()
-//                                .name("email_id")
-//                                .type("S")
-//                                .build(),
-//                        TableAttributeArgs.builder()
-//                                .name("assignment_id")
-//                                .type("S")
-//                                .build())
+//
                 .tags(Map.ofEntries(
                         Map.entry("Environment", "development"),
                         Map.entry("Name", "assignment-submissions")

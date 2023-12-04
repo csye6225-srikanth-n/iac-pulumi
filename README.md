@@ -16,6 +16,8 @@ To change stack : pulumi select stack dev/demo
 
 To create a new stack :  pulumi stack init example
 
+Run the below command in the AWS CLI to create a certificate for the domain name
+aws iam upload-server-certificate --server-certificate-name srikanthnandikonda.me --certificate-body file://certificate.crt --private-key file://private.key --certificate-chain file://ca_bundle.crt
 
 
 
